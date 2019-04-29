@@ -116,7 +116,7 @@ kms_init_dependencies (int *argc, char ***argv)
 int
 main (int argc, char **argv)
 {
-  struct sigaction signalAction;
+  struct sigaction signalAction {};
   std::shared_ptr<Transport> transport;
   boost::property_tree::ptree config;
   std::string confFile;
@@ -189,11 +189,13 @@ main (int argc, char **argv)
 
     boost::program_options::notify (vm);
 
+    kms_init_logging ();
+
     if (vm.count ("logs-path") ) {
-      if (kms_init_logging (logs_path, fileSize, fileNumber) ) {
-        GST_DEBUG ("Dumping logs to %s", logs_path.c_str() );
+      if (kms_init_logging_files (logs_path, fileSize, fileNumber) ) {
+        GST_INFO ("Logs storage path set to %s", logs_path.c_str() );
       } else {
-        GST_WARNING ("Cannot set logs path to %s", logs_path.c_str() );
+        GST_WARNING ("Cannot set logs storage path to %s", logs_path.c_str() );
       }
     }
 
@@ -204,7 +206,7 @@ main (int argc, char **argv)
 
     if (vm.count ("version") || vm.count ("list") ) {
       // Disable log to just print version
-      gst_debug_remove_log_function_by_data (NULL);
+      gst_debug_remove_log_function_by_data(nullptr);
     }
 
     loadModules (path);
@@ -231,12 +233,11 @@ main (int argc, char **argv)
   /* Install our signal handler */
   signalAction.sa_handler = signal_handler;
 
-  sigaction (SIGINT, &signalAction, NULL);
-  sigaction (SIGTERM, &signalAction, NULL);
-  sigaction (SIGPIPE, &signalAction, NULL);
+  sigaction(SIGINT, &signalAction, nullptr);
+  sigaction(SIGTERM, &signalAction, nullptr);
+  sigaction(SIGPIPE, &signalAction, nullptr);
 
-  GST_INFO ("Kmsc version: %s", get_version () );
-  GST_INFO ("Compiled at: %s %s", __DATE__, __TIME__ );
+  GST_INFO ("Kurento Media Server version: %s", get_version () );
 
   loadConfig (config, confFile, modulesConfigPath);
 
@@ -244,7 +245,9 @@ main (int argc, char **argv)
     config.get_optional<float> ("mediaServer.resources.killLimit");
 
   if (killResourceLimit) {
-    GST_INFO ("Resource limit is: %f", *killResourceLimit);
+    GST_INFO ("Using above %.2f%% of system limits will kill the server when no objects are alive",
+              *killResourceLimit * 100.0f);
+
     killServerOnLowResources (*killResourceLimit);
   }
 
@@ -253,14 +256,14 @@ main (int argc, char **argv)
   /* Start transport */
   transport->start ();
 
-  GST_INFO ("Mediaserver started");
+  GST_INFO ("Kurento Media Server started");
 
   loop->run ();
 
   transport->stop();
   MediaSet::deleteMediaSet();
 
-  GST_INFO ("Mediaserver stopped");
+  GST_INFO ("Kurento Media Server stopped");
 
   return 0;
 }

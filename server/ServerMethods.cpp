@@ -18,6 +18,7 @@
 #include <gst/gst.h>
 #include "ServerMethods.hpp"
 #include <MediaSet.hpp>
+#include <memory>
 #include <string>
 #include <EventHandler.hpp>
 #include <KurentoException.hpp>
@@ -70,23 +71,42 @@ ServerMethods::ServerMethods (const boost::property_tree::ptree &config) :
   std::vector<std::string> capabilities;
   std::shared_ptr <ServerInfo> serverInfo;
   std::shared_ptr<MediaObjectImpl> serverManager;
-  std::chrono::seconds collectorInterval;
+  std::chrono::seconds collectorInterval{};
   bool disableRequestCache;
 
   collectorInterval = std::chrono::seconds (
-                        config.get<int> ("mediaServer.resources.garbageCollectorPeriod",
+                        config.get<long> ("mediaServer.resources.garbageCollectorPeriod",
                                          MediaSet::getCollectorInterval().count() ) );
   MediaSet::setCollectorInterval (collectorInterval);
 
-  disableRequestCache = config.get<bool> ("mediaServer.disableRequestCache",
+  disableRequestCache = config.get<bool> ("mediaServer.resources.disableRequestCache",
                                           false);
 
   resourceLimitPercent =
     config.get<float> ("mediaServer.resources.exceptionLimit",
                        DEFAULT_RESOURCE_LIMIT_PERCENT);
 
-  GST_INFO ("Not enough resources exception will be raised when resources reach %f ",
-            resourceLimitPercent);
+  GST_INFO ("Using above %.2f%% of system limits will throw NOT_ENOUGH_RESOURCES exception",
+            resourceLimitPercent * 100.0f);
+
+  std::string maxThreadsStr;
+  const rlim_t maxThreads = getMaxThreads ();
+  if (maxThreads == RLIM_INFINITY) {
+    maxThreadsStr = "unlimited";
+  } else {
+    maxThreadsStr = std::to_string(maxThreads);
+  }
+
+  std::string maxOpenFilesStr;
+  const rlim_t maxOpenFiles = getMaxOpenFiles ();
+  if (maxOpenFiles == RLIM_INFINITY) {
+    maxOpenFilesStr = "unlimited";
+  } else {
+    maxOpenFilesStr = std::to_string(maxOpenFiles);
+  }
+
+  GST_INFO ("System limits: %s threads, %s files",
+      maxThreadsStr.c_str(), maxOpenFilesStr.c_str());
 
   instanceId = generateUUID();
 
@@ -97,22 +117,22 @@ ServerMethods::ServerMethods (const boost::property_tree::ptree &config) :
       factories.push_back (factIt.first);
     }
 
-    modules.push_back (std::shared_ptr<ModuleInfo> (new ModuleInfo (
-                         moduleIt.second->getVersion(), moduleIt.second->getName(),
-                         moduleIt.second->getGenerationTime(), factories) ) );
+    modules.push_back(std::make_shared<ModuleInfo>(
+        moduleIt.second->getVersion(), moduleIt.second->getName(),
+        moduleIt.second->getGenerationTime(), factories));
   }
 
-  capabilities.push_back ("transactions");
+  capabilities.emplace_back("transactions");
 
-  serverInfo = std::shared_ptr <ServerInfo> (new ServerInfo (version, modules,
-               type, capabilities) );
+  serverInfo =
+      std::make_shared<ServerInfo>(version, modules, type, capabilities);
 
   serverManager = MediaSet::getMediaSet ()->ref (new ServerManagerImpl (
                     serverInfo, config, moduleManager) );
   MediaSet::getMediaSet ()->setServerManager (std::dynamic_pointer_cast
       <ServerManagerImpl> (serverManager) );
 
-  cache = std::shared_ptr<RequestCache> (new RequestCache (REQUEST_TIMEOUT) );
+  cache = std::make_shared<RequestCache>(REQUEST_TIMEOUT);
 
   if (!disableRequestCache) {
     handler.setPreProcess (std::bind (&ServerMethods::preProcess, this,
@@ -121,8 +141,9 @@ ServerMethods::ServerMethods (const boost::property_tree::ptree &config) :
     handler.setPostProcess (std::bind (&ServerMethods::postProcess, this,
                                        std::placeholders::_1,
                                        std::placeholders::_2) );
+    GST_INFO ("RPC Request Cache is ENABLED");
   } else {
-    GST_DEBUG ("Disabling cache");
+    GST_INFO ("RPC Request Cache is DISABLED");
   }
 
   handler.addMethod ("connect", std::bind (&ServerMethods::connect, this,
@@ -164,9 +185,7 @@ ServerMethods::ServerMethods (const boost::property_tree::ptree &config) :
                      std::placeholders::_1, std::placeholders::_2) );
 }
 
-ServerMethods::~ServerMethods()
-{
-}
+ServerMethods::~ServerMethods() = default;
 
 static void
 requireParams (const Json::Value &params)
@@ -243,7 +262,6 @@ ServerMethods::process (const std::string &requestStr, std::string &responseStr,
   Json::Value request;
   bool parse = false;
   Json::Reader reader;
-  Json::FastWriter writer;
   std::string newSessionId;
 
   parse = reader.parse (requestStr, request);
@@ -266,7 +284,9 @@ ServerMethods::process (const std::string &requestStr, std::string &responseStr,
   }
 
   if (response != Json::Value::null) {
-    responseStr = writer.write (response);
+    Json::StreamWriterBuilder writerFactory;
+    writerFactory["indentation"] = "";
+    responseStr = Json::writeString (writerFactory, response);
   }
 
   return newSessionId;
@@ -305,13 +325,10 @@ ServerMethods::preProcess (const Json::Value &request, Json::Value &response)
 void
 ServerMethods::postProcess (const Json::Value &request, Json::Value &response)
 {
-  Json::FastWriter writer;
   std::string sessionId;
   std::string requestId;
 
   try {
-    Json::Reader reader;
-
     JsonRpc::getValue (request, JSON_RPC_ID, requestId);
 
     try {
@@ -691,8 +708,8 @@ void
 injectRefs (Json::Value &params, Json::Value &responses)
 {
   if (params.isObject () || params.isArray () ) {
-    for (auto it = params.begin(); it != params.end() ; it++) {
-      injectRefs (*it, responses);
+    for (auto &param : params) {
+      injectRefs(param, responses);
     }
   } else if (params.isConvertibleTo (Json::ValueType::stringValue) ) {
     std::string param = JsonFixes::getString (params);

@@ -24,8 +24,6 @@
 #include <KurentoException.hpp>
 #include <MediaSet.hpp>
 
-#include <sys/resource.h>
-
 #define GST_CAT_DEFAULT kurento_resource_manager
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
 #define GST_DEFAULT_NAME "KurentoResourceManager"
@@ -33,10 +31,7 @@ GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
 namespace kurento
 {
 
-static int maxOpenFiles = 0;
-static int maxThreads = 0;
-
-static int
+static long int
 get_int (std::string &str, char sep, int nToken)
 {
   size_t start = str.find_first_not_of (sep), end;
@@ -47,7 +42,7 @@ get_int (std::string &str, char sep, int nToken)
 
     if (count++ == nToken) {
       str[end] = '\0';
-      return atoi (&str.c_str() [start]);
+      return atol (&str.c_str() [start]);
     }
 
     start = str.find_first_not_of (sep, end);
@@ -56,11 +51,11 @@ get_int (std::string &str, char sep, int nToken)
   return 0;
 }
 
-static int
+static long int
 getNumberOfThreads ()
 {
   std::string stat;
-  std::ifstream stat_file ("/proc/self/stat");
+  std::ifstream stat_file ("/proc/self/stat");  // `man proc`
 
   std::getline (stat_file, stat);
   stat_file.close();
@@ -68,59 +63,71 @@ getNumberOfThreads ()
   return get_int (stat, ' ', 19);
 }
 
-static int
+rlim_t
 getMaxThreads ()
 {
-  if (maxThreads == 0) {
+  static rlim_t limit = 0;
+
+  if (limit == 0) {
     struct rlimit limits;
     getrlimit (RLIMIT_NPROC, &limits);
 
-    maxThreads = limits.rlim_cur;
+    limit = limits.rlim_cur;
   }
 
-  return maxThreads;
+  return limit;
 }
 
 static void
 checkThreads (float limit_percent)
 {
-  int nThreads;
-  int maxThreads = getMaxThreads ();
-
-  if (maxThreads <= 0) {
+  const rlim_t maxThreads = getMaxThreads ();
+  if (maxThreads <= 0 || maxThreads == RLIM_INFINITY) {
     return;
   }
 
-  nThreads = getNumberOfThreads ();
+  const rlim_t maxThreadsKms = (rlim_t)(maxThreads * limit_percent);
+  const rlim_t nThreads = (rlim_t)getNumberOfThreads ();
 
-  if (nThreads > maxThreads * limit_percent ) {
-    throw KurentoException (NOT_ENOUGH_RESOURCES, "Too many threads");
+  if (nThreads > maxThreadsKms) {
+    std::ostringstream oss;
+    oss << "Reached KMS threads limit: " << maxThreadsKms;
+    std::string exMessage = oss.str();
+
+    oss << " (system max: " << maxThreads << ");"
+        << " set a higher limit with `ulimit -Su`, or in the KMS service settings (/etc/default/kurento-media-server)";
+    std::string logMessage = oss.str();
+
+    GST_WARNING ("%s", logMessage.c_str());
+    throw KurentoException (NOT_ENOUGH_RESOURCES, exMessage);
   }
 }
 
-static int
+rlim_t
 getMaxOpenFiles ()
 {
-  if (maxOpenFiles == 0) {
+  static rlim_t limit = 0;
+
+  if (limit == 0) {
     struct rlimit limits;
     getrlimit (RLIMIT_NOFILE, &limits);
 
-    maxOpenFiles = limits.rlim_cur;
+    limit = limits.rlim_cur;
   }
 
-  return maxOpenFiles;
+  return limit;
 }
 
-static int
+static long int
 getNumberOfOpenFiles ()
 {
-  int openFiles = 0;
+  long int openFiles = 0;
   DIR *d;
   struct dirent *dir;
 
   d = opendir ("/proc/self/fd");
 
-  while ( (dir = readdir (d) ) != NULL) {
+  while ((dir = readdir(d)) != nullptr) {
     openFiles ++;
   }
 
@@ -132,17 +139,25 @@ getNumberOfOpenFiles ()
 static void
 checkOpenFiles (float limit_percent)
 {
-  int nOpenFiles;
-  int maxOpenFiles = getMaxOpenFiles ();
-
-  if (maxOpenFiles <= 0) {
+  const rlim_t maxOpenFiles = getMaxOpenFiles ();
+  if (maxOpenFiles <= 0 || maxOpenFiles == RLIM_INFINITY) {
     return;
   }
 
-  nOpenFiles = getNumberOfOpenFiles ();
+  const rlim_t maxOpenFilesKms = (rlim_t)(maxOpenFiles * limit_percent);
+  const rlim_t nOpenFiles = (rlim_t)getNumberOfOpenFiles ();
 
-  if (nOpenFiles > maxOpenFiles * limit_percent ) {
-    throw KurentoException (NOT_ENOUGH_RESOURCES, "Too many open files");
+  if (nOpenFiles > maxOpenFilesKms) {
+    std::ostringstream oss;
+    oss << "Reached KMS files limit: " << maxOpenFilesKms;
+    std::string exMessage = oss.str();
+
+    oss << " (system max: " << maxOpenFiles << ");"
+        << " set a higher limit with `ulimit -Sn`, or in the KMS service settings (/etc/default/kurento-media-server)";
+    std::string logMessage = oss.str();
+
+    GST_WARNING ("%s", logMessage.c_str());
+    throw KurentoException (NOT_ENOUGH_RESOURCES, exMessage);
   }
 }
 
@@ -162,7 +177,8 @@ void killServerOnLowResources (float limit_percent)
       checkResources (limit_percent);
     } catch (KurentoException &e) {
       if (e.getCode() == NOT_ENOUGH_RESOURCES) {
-        GST_ERROR ("Resources over the limit, server will be killed");
+        GST_ERROR ("Resources over the limit, server will be killed: %s",
+            e.what());
         kill ( getpid(), SIGTERM );
       }
     }
@@ -171,11 +187,9 @@ void killServerOnLowResources (float limit_percent)
 
 } /* kurento */
 
-static void init_debug (void) __attribute__ ( (constructor) );
+static void init_debug() __attribute__((constructor));
 
-static void
-init_debug (void)
-{
+static void init_debug() {
   GST_DEBUG_CATEGORY_INIT (GST_CAT_DEFAULT, GST_DEFAULT_NAME, 0,
                            GST_DEFAULT_NAME);
 }

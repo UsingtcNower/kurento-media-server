@@ -13,22 +13,18 @@ find_package(KurentoHelpers REQUIRED)
 
 include(KurentoGitHelpers)
 install_git_hook(pre-commit ${CMAKE_CURRENT_SOURCE_DIR}/hooks/pre-commit.hook)
-get_git_version(PROJECT_VERSION 6.7.0-dev)
+get_git_version(PROJECT_VERSION 6.11.0-dev)
 message(STATUS "Project version: ${PROJECT_NAME}-${PROJECT_VERSION}")
 
-# Set GCC flags common to all projects
-# Note: Flags added from dpkg-buildflags (if installed):
-# -g -O2 -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2
-include(DpkgBuildFlags)
-get_dpkg_buildflags_c(DPKG_BUILDFLAGS_C)
-get_dpkg_buildflags_cxx(DPKG_BUILDFLAGS_CXX)
-set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   ${DPKG_BUILDFLAGS_C}   -std=c11   -Wall -Werror -pthread")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${DPKG_BUILDFLAGS_CXX} -std=c++11 -Wall -Werror -pthread")
-set(CMAKE_C_FLAGS_DEBUG   "-g -O0") # FIXME Ideal is '-Og' but a bug in GCC prevents this,
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O0") # causing "may be used uninitialized" errors: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=58455
-set(CMAKE_C_FLAGS_RELEASE   "-DNDEBUG -O2") # CMake adds '-O3' by default
-set(CMAKE_CXX_FLAGS_RELEASE "-DNDEBUG -O2") # but currently only '-O2' is tested
-set(CMAKE_POSITION_INDEPENDENT_CODE ON) # Use "-fPIC" for all targets, including static libs
+# Compiler flags
+include(CommonBuildFlags)
+common_buildflags_set()
+#common_buildflags_print()
+
+# Development: Add here exceptions to the "Warnings are Errors" rule.
+# Also, DOCUMENT WHY and always remove them as soon as the problem is fixed.
+# For example:
+# set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-error=unused-function")
 
 # FIXME Disable error when macros __TIME__, __DATE__ or __TIMESTAMP__ are encountered
 include(CheckCXXCompilerFlag)
@@ -37,16 +33,12 @@ if(HAS_WARNING_DATE_TIME)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=date-time")
 endif()
 
-# FIXME Disable error when deprecated functionality is used
-# (glibmm library uses C++ dynamic exception specifications)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-error=deprecated")
-
-# Disable deprecated GStreamer APIs
+# FIXME Disable deprecated GStreamer APIs
 set(CMAKE_C_FLAGS   "${CMAKE_C_FLAGS}   -DGST_DISABLE_DEPRECATED")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DGST_DISABLE_DEPRECATED")
 
 include(GenericFind)
-generic_find(LIBNAME KMSCORE VERSION ^6.6.0 REQUIRED)
+generic_find(LIBNAME KMSCORE VERSION ^6.7.0 REQUIRED)
 
 # Generate file "config.h"
 check_version_internal(>=2.6.2 sigc++-2.0_VERSION OUTPUT_ERROR)
@@ -84,7 +76,13 @@ enable_testing()
 
 add_subdirectory(test)
 
+
 include(GNUInstallDirs)
 install(FILES kurento.conf.json sdp_pattern.txt DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/${CUSTOM_PREFIX})
+
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/config)
+get_filename_component(CONFIG_FILE kurento.conf.json ABSOLUTE)
+execute_process(COMMAND ln -fs ${CONFIG_FILE} ${CMAKE_BINARY_DIR}/config/)
+
 
 add_subdirectory(scaffold)

@@ -28,6 +28,7 @@
 #include <boost/property_tree/info_parser.hpp>
 #include <boost/property_tree/ini_parser.hpp>
 #include <boost/property_tree/xml_parser.hpp>
+#include <utility>
 
 #define GST_CAT_DEFAULT kurento_load_config
 GST_DEBUG_CATEGORY_STATIC (GST_CAT_DEFAULT);
@@ -39,14 +40,11 @@ namespace kurento
 class ParseException : public virtual std::exception
 {
 public:
-  ParseException (const std::string &message) : message (message) {};
+  ParseException(std::string message) : message(std::move(message)){};
 
-  virtual ~ParseException() {};
+  ~ParseException() override = default;
 
-  virtual const char *what() const noexcept
-  {
-    return message.c_str();
-  };
+  const char *what() const noexcept override { return message.c_str(); };
 
   const std::string &getMessage() const
   {
@@ -107,18 +105,34 @@ loadFile (boost::property_tree::ptree &config,
 
   if (extension2.string() == ".conf") {
     if (extension.string() == ".json") {
-      boost::property_tree::read_json (file.string(), readConfig);
+      try {
+        boost::property_tree::read_json (file.string(), readConfig);
+      } catch (boost::property_tree::json_parser_error &e) {
+        throw ParseException (std::string("Parse error: ") + e.what());
+      }
     } else if (extension.string() == ".info") {
-      boost::property_tree::read_info (file.string(), readConfig);
+      try {
+        boost::property_tree::read_info (file.string(), readConfig);
+      } catch (boost::property_tree::info_parser_error &e) {
+        throw ParseException (std::string("Parse error: ") + e.what());
+      }
     } else if (extension.string() == ".ini") {
-      boost::property_tree::read_ini (file.string(), readConfig);
+      try {
+        boost::property_tree::read_ini (file.string(), readConfig);
+      } catch (boost::property_tree::ini_parser_error &e) {
+        throw ParseException (std::string("Parse error: ") + e.what());
+      }
     } else if (extension.string() == ".xml") {
-      boost::property_tree::read_xml (file.string(), readConfig);
+      try {
+        boost::property_tree::read_xml (file.string(), readConfig);
+      } catch (boost::property_tree::xml_parser_error &e) {
+        throw ParseException (std::string("Parse error: ") + e.what());
+      }
     } else {
-      throw ParseException ("Unknonw file format");
+      throw ParseException ("Unknown file format");
     }
   } else {
-    throw ParseException ("Unknonw file format");
+    throw ParseException ("Unknown file format");
   }
 
   mergePropertyTrees (config, readConfig);
@@ -191,7 +205,8 @@ loadModulesConfigFromDir (boost::property_tree::ptree &config,
 
         GST_INFO ("Loaded module config from: %s", itr->path().string().c_str() );
       } catch (ParseException &e) {
-        // Ignore this exceptions here
+        GST_ERROR ("Error reading configuration: %s", e.what());
+        std::cerr << "Error reading configuration: " << e.what() << std::endl;
       }
     } else if (boost::filesystem::is_directory (*itr) ) {
       loadModulesConfigFromDir (config, itr->path(), parentDir);
@@ -249,16 +264,14 @@ loadConfig (boost::property_tree::ptree &config, const std::string &file_name,
   boost::property_tree::write_json (oss, config, true);
   std::string infoConfig = oss.str();
 
-  GST_DEBUG ("Effective loaded config:\n%s", infoConfig.c_str() );
+  GST_INFO ("Loaded config in effect:\n%s", infoConfig.c_str() );
 }
 
 } /* kurento */
 
-static void init_debug (void) __attribute__ ( (constructor) );
+static void init_debug() __attribute__((constructor));
 
-static void
-init_debug (void)
-{
+static void init_debug() {
   GST_DEBUG_CATEGORY_INIT (GST_CAT_DEFAULT, GST_DEFAULT_NAME, 0,
                            GST_DEFAULT_NAME);
 }
